@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <Platforms>AnyCPU;x64</Platforms>
+    <Authors>jorgensigvardsson, Erwin Herzog</Authors>
+    <Company />
+    <Description>libssh2 - wrapper for .netcore</Description>
+    <Copyright>Copyright ©  2020</Copyright>
+    <Version>1.0.2</Version>
+    <SignAssembly>true</SignAssembly>
+    <DelaySign>false</DelaySign>
+    <AssemblyOriginatorKeyFile>ErwinHerzog.snk</AssemblyOriginatorKeyFile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefineConstants>TRACE;DEBUG;WithLibTest</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="Interop\RuntimeShim.cs" />
+    <Compile Remove="Interop\SSH2Lib.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Interop\RuntimeShim.cs" />
+    <None Include="Interop\SSH2Lib.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Runtime.Loader" Version="4.3.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,7 @@
+{
+  "profiles": {
+    "libssh2.core": {
+      "commandName": "Project"
+    }
+  }
+}

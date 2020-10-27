@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>netcoreapp2.0</TargetFramework>
+    <Platforms>AnyCPU;x64</Platforms>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\libssh2.core\libssh2.core.csproj" />
+    <!-- $(ProjectDir) -->
+    <Content Include="..\libssh2.core\bin\x64\Debug\netstandard2.0\libssh2.core.dll" Condition="'$(Platform)' == 'x64' and '$(Configuration)' == 'Debug'" Link="libssh2.core.dll" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\libssh2.core\bin\x64\Release\netstandard2.0\libssh2.core.dll" Condition="'$(Platform)' == 'x64' and '$(Configuration)' == 'Release'" Link="libssh2.core.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
