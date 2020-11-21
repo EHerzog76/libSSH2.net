@@ -4,6 +4,7 @@ using System.Text;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.ExceptionServices;
 using System.Collections;
 using System.Collections.Generic;
 
@@ -11,6 +12,7 @@ namespace libssh2.core.Interop
 {
     public static class SSH2Library
     {
+        private static object SSH2Lock;
         private const string libSSH2Name = InteropRuntimeConfig.LibraryName + ".dll";
         public static UnmanagedLibrary libVCRun = null;
         public static UnmanagedLibrary libSSH2 = null;
@@ -23,6 +25,7 @@ namespace libssh2.core.Interop
         static SSH2Library()
         {
             libSSH2Init = false;
+            SSH2Lock = new object();
         }
 
         public static void Open(bool DebugFlag) {
@@ -197,16 +200,18 @@ namespace libssh2.core.Interop
 
         public static void Close()
         {
-            if(libSSH2 != null)
+            lock (SSH2Lock)
             {
-                libSSH2.Close();
-                libSSH2 = null;
-            }
-            if(libZLib1 != null)
-            {
-                libZLib1.Close();
-                libZLib1 = null;
-            }
+                if (libSSH2 != null)
+                {
+                    libSSH2.Close();
+                    libSSH2 = null;
+                }
+                if (libZLib1 != null)
+                {
+                    libZLib1.Close();
+                    libZLib1 = null;
+                }
 #if WithLibTest
             if(libTest != null)
             {
@@ -214,10 +219,11 @@ namespace libssh2.core.Interop
                 libTest = null;
             }
 #endif
-            if(libVCRun != null)
-            {
-                libVCRun.Close();
-                libVCRun = null;
+                if (libVCRun != null)
+                {
+                    libVCRun.Close();
+                    libVCRun = null;
+                }
             }
         }
 
@@ -237,8 +243,21 @@ namespace libssh2.core.Interop
             //output.WriteLine("UTF-8  Bytes: {0}", BitConverter.ToString(utf8String));
             //output.WriteLine("ASCII  Bytes: {0}", BitConverter.ToString(asciiString));
         }
+        public static string PtrToStringUtf8(IntPtr ptr) // aPtr is nul-terminated
+        {
+            if (ptr == IntPtr.Zero)
+                return "";
+            int len = 0;
+            while (System.Runtime.InteropServices.Marshal.ReadByte(ptr, len) != 0)
+                len++;
+            if (len == 0)
+                return "";
+            byte[] array = new byte[len];
+            System.Runtime.InteropServices.Marshal.Copy(ptr, array, 0, len);
+            return System.Text.Encoding.UTF8.GetString(array);
+        }
 
-#region TestDll.dll
+        #region TestDll.dll
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate int del_testdll_write2console([MarshalAs(UnmanagedType.LPStr)] string strMsg);  //[MarshalAs(UnmanagedType.LPStr)]
         public static del_testdll_write2console testdll_write2console;
@@ -247,7 +266,7 @@ namespace libssh2.core.Interop
         //public static extern int write2console([MarshalAs(UnmanagedType.LPStr)] string strMsg);
 #endregion
 
-#region libssh2.dll (version 1.8.0.0)
+#region libssh2.dll (version 1.9.0.0)
         public const int LIBSSH2_INIT_NO_CRYPTO = 0x0001;
 
         [StructLayout(LayoutKind.Sequential)]
@@ -407,7 +426,57 @@ namespace libssh2.core.Interop
             packet_requirev_state_t req_auth_agent_requirev_state;
         }
 
-        public static IntPtr libssh2_session_init() => libssh2_session_init_ex(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public delegate IntPtr del_AllocFunc(/* size_t */ UIntPtr count, IntPtr @abstract);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public delegate void del_FreeFunc([In, Out]IntPtr buffer, IntPtr @abstract);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public delegate IntPtr del_ReAllocFunc([In, Out]IntPtr buffer,/* size_t */ UIntPtr count, IntPtr @abstract);
+
+        private static del_AllocFunc AllocFunc = l_AllocFunc;
+        private static del_FreeFunc FreeFunc = l_FreeFunc;
+        private static del_ReAllocFunc ReAllocFunc = l_ReAllocFunc;
+
+        public static IntPtr l_AllocFunc(/* size_t */ UIntPtr count, IntPtr @abstract)
+        {
+            return(Marshal.AllocHGlobal((int)count ));  // (count.ToUInt64())
+        }
+        //[HandleProcessCorruptedStateExceptions]
+        //[HandleProcessCorruptedStateExceptionsAttribute]
+        public static void l_FreeFunc(IntPtr buffer, IntPtr @abstract)
+        {
+            if (buffer != IntPtr.Zero)
+            {
+                //try
+                //{
+                    Marshal.FreeHGlobal(buffer);
+                    buffer = IntPtr.Zero;
+                //}catch(Exception ex) { }
+            }
+            return;
+        }
+        public static IntPtr l_ReAllocFunc(IntPtr buffer, UIntPtr count, IntPtr @abstract)
+        {
+            return (Marshal.ReAllocHGlobal(buffer, (IntPtr)((uint)count)));
+        }
+
+        public static IntPtr libssh2_session_init()
+        {
+            return(libssh2_session_init(false));
+        }
+        public static IntPtr libssh2_session_init(bool WithOwnAlloc)
+        {
+            if (WithOwnAlloc)
+            {
+                return (libssh2_session_init_ex(Marshal.GetFunctionPointerForDelegate<del_AllocFunc>(AllocFunc),
+                    Marshal.GetFunctionPointerForDelegate<del_FreeFunc>(FreeFunc),
+                    Marshal.GetFunctionPointerForDelegate<del_ReAllocFunc>(ReAllocFunc),
+                    IntPtr.Zero));
+            } else
+            {
+                return (libssh2_session_init_ex(IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero));
+            }
+        }
 
         //[DllImport(libSSH2Name, CallingConvention = CallingConvention.Cdecl)]
         //  Win-Version
@@ -425,10 +494,16 @@ namespace libssh2.core.Interop
         {
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
+                if (hSocket == IntPtr.Zero)
+                    return (-1);
+
                 return (libssh2_session_handshake_w(session, hSocket));
             }
             else
             {
+                if (iSocket == 0)
+                    return (-1);
+
                 return (libssh2_session_handshake_l(session, iSocket));
             }
         }
@@ -485,11 +560,14 @@ namespace libssh2.core.Interop
             return libssh2_channel_process_startup(channel, request, (uint)request.Length, subsystem, (uint)subsystem.Length);
         }
 
-        public static int libssh2_channel_read(IntPtr channel,
-                                               byte[] buf)
+        public static int libssh2_channel_read(IntPtr channel, ref byte[] buf)
         {
-            return libssh2_channel_read_ex(channel, 0, buf, new UIntPtr((uint)buf.Length));
+            return(libssh2_channel_read_ex(channel, 0, buf, new UIntPtr((uint)buf.Length)));
         }
+        /* public static int libssh2_channel_read(IntPtr channel, out IntPtr buf, int bufLen)
+        {
+            return libssh2_channel_read_ex(channel, 0, out buf, new UIntPtr((uint)bufLen));
+        } */
 
         public const int SSH_EXTENDED_DATA_STDERR = 1;
 
@@ -503,6 +581,10 @@ namespace libssh2.core.Interop
         {
             return libssh2_channel_write_ex(channel, 0, buf, new UIntPtr((uint)buf.Length));
         }
+        /* public static int libssh2_channel_write(IntPtr channel, IntPtr buf, int bufLen)
+        {
+            return libssh2_channel_write_ex(channel, 0, buf, new UIntPtr((uint)bufLen));
+        } */
 
         public static int libssh2_userauth_password(IntPtr session, string username, string password)
         {
@@ -670,7 +752,8 @@ namespace libssh2.core.Interop
         public delegate IntPtr del_libssh2_channel_open_ex(IntPtr session, [MarshalAs(UnmanagedType.LPStr)] string channel_type, uint channel_type_len, uint window_size, uint packet_size, [MarshalAs(UnmanagedType.LPStr)] string message, uint message_len);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate int del_libssh2_session_last_error(IntPtr session, [MarshalAs(UnmanagedType.LPStr), Out] out string errmsg, out int errmsg_len, int want_buf = 1 /* don't set to 0 - let the CLR manage the errmsg buffer! */);
+        public delegate int del_libssh2_session_last_error(IntPtr session, ref IntPtr errmsg, out int errmsg_len, int want_buf = 0 /* don't set to 1 - let libSSH2 manage the errmsg buffer! */);
+        //public delegate int del_libssh2_session_last_error(IntPtr session, [MarshalAs(UnmanagedType.LPStr), Out] out string errmsg, out int errmsg_len, int want_buf = 1 /* don't set to 0 - let the CLR manage the errmsg buffer! */);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate int del_libssh2_session_last_errno(IntPtr session);
@@ -685,7 +768,9 @@ namespace libssh2.core.Interop
         public delegate int del_libssh2_channel_process_startup(IntPtr channel, [MarshalAs(UnmanagedType.LPStr)] string request, uint request_len, [MarshalAs(UnmanagedType.LPStr)] string message, uint message_len);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate int del_libssh2_channel_read_ex(IntPtr channel, int stream_id, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 3), In, Out] byte[] buf, UIntPtr buflen);
+        public delegate int del_libssh2_channel_read_ex(IntPtr channel, int stream_id, [In, Out] byte[] buf, UIntPtr buflen);
+        //public delegate int del_libssh2_channel_read_ex(IntPtr channel, int stream_id, out IntPtr buf, UIntPtr buflen);
+        //public delegate int del_libssh2_channel_read_ex(IntPtr channel, int stream_id, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 3), In, Out] byte[] buf, UIntPtr buflen);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate int del_libssh2_channel_get_exit_status(IntPtr channel);
@@ -736,7 +821,9 @@ namespace libssh2.core.Interop
         public delegate int del_libssh2_channel_flush_ex(IntPtr channel, int streamid);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        public delegate int del_libssh2_channel_write_ex(IntPtr channel, int stream_id, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 3), In] byte[] buf, UIntPtr buflen);
+        public delegate int del_libssh2_channel_write_ex(IntPtr channel, int stream_id, [In] byte[] buf, UIntPtr buflen);
+        //public delegate int del_libssh2_channel_write_ex(IntPtr channel, int stream_id, IntPtr buf, UIntPtr buflen);
+        //public delegate int del_libssh2_channel_write_ex(IntPtr channel, int stream_id, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 3), In] byte[] buf, UIntPtr buflen);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate int del_libssh2_userauth_password_ex(IntPtr session, [MarshalAs(UnmanagedType.LPStr)] string username, uint username_len, [MarshalAs(UnmanagedType.LPStr)] string password, uint password_len, IntPtr passwotd_change_cb);

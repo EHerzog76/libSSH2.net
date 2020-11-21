@@ -19,7 +19,7 @@ namespace libssh2.core
         const int RTLD_GLOBAL = 8;
 
         readonly string libraryPath;
-        readonly IntPtr handle;
+        /* readonly */ IntPtr handle;
         private bool bLibOpen = false;
         private static bool bDebug = false;
 
@@ -54,28 +54,40 @@ namespace libssh2.core
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) )
             {
                 if (this.handle != IntPtr.Zero)
+                {
                     Windows.FreeLibrary(this.handle);
+                    this.handle = IntPtr.Zero;
+                }
             } else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
             {
                 if (InteropRuntimeConfig.IsRunningOnMono)
                 {
                     if (this.handle != IntPtr.Zero)
+                    {
                         Mono.dlclose(this.handle);
+                        this.handle = IntPtr.Zero;
+                    }
                 } else if (RuntimeInformation.FrameworkDescription.StartsWith(".NET Core"))
                 {
-                    if (this.handle != IntPtr.Zero)
+                    if (this.handle != IntPtr.Zero) {
                         CoreCLR.dlclose(this.handle);
+                        this.handle = IntPtr.Zero;
+                    }
                 }
                 else {
-                    if (this.handle != IntPtr.Zero)
+                    if (this.handle != IntPtr.Zero) {
                         Linux.dlclose(this.handle);
+                        this.handle = IntPtr.Zero;
+                    }
                 }
                             
             }
             else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             {
-                if (this.handle != IntPtr.Zero)
+                if (this.handle != IntPtr.Zero) {
                     MacOSX.dlclose(this.handle);
+                    this.handle = IntPtr.Zero;
+                }
             }
             else
             {

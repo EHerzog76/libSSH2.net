@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -9,8 +10,15 @@ namespace TestSSH
 {
     class Program
     {
-        public static String SSHUser = "eherzog@post", SSHPwd = "SonzT451F";
+        public static String SSHUser = "cisco", SSHPwd = "cisco";
+        private static object libSSH2Lock;
+        private static bool RecvErr = false;
         public static IntPtr libSSHSession = IntPtr.Zero, sshChannel = IntPtr.Zero;
+        private static int dstPort = 22;
+        private static bool DebugFlag = false;
+        private static bool DataRecvied = false;
+        private static string recvData = "", strPrompt = "";
+        private static bool Wait4Input = false;
 
         public static void kbd_callback(string name, int name_len,
                          string instruction, int instruction_len,
@@ -32,33 +40,108 @@ namespace TestSSH
             @abstract = IntPtr.Zero;
         } /* kbd_callback */
 
-        static void Main(string[] args)
+        static int Main(string[] args)
         {
             int rc = 0, sshExitCode = -1;
             string cmd = "";
             byte[] readBuffer = new byte[4096], dataBuffer;
+            string DeviceIP = "";
+            bool bCmdReady = false;
+            System.Text.RegularExpressions.Regex rePrompt = new System.Text.RegularExpressions.Regex(@".*[#>][ \n\r]*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
+            foreach (string param in args)
+            {
+                if (param.ToLower().StartsWith("/d:"))
+                {
+                    DeviceIP = param.Substring(3);
+                }else if (param.ToLower().StartsWith("/port:"))
+                {
+                    string strPort = param.Substring(6);
+                    if(int.TryParse(strPort, out dstPort))
+                    {
+                    }
+                    else
+                    {
+                        Console.WriteLine("Parameter port  was in wrong format !\n   Valied values are 1-65535.\n   Now we use port: 22.");
+                    }
+                } else if (param.ToLower().StartsWith("/u:"))
+                {
+                    SSHUser = param.Substring(3);
+                }
+                else if (param.ToLower().StartsWith("/p:"))
+                {
+                    SSHPwd = param.Substring(3);
+                }
+                else if (param.ToLower().StartsWith("/debug"))
+                {
+                    DebugFlag = true;
+                }
+                else if (param.ToLower().StartsWith("/wait"))
+                {
+                    Wait4Input = true;
+                }
+                else
+                {
+                    Console.WriteLine("Usage:");
+                    Console.WriteLine("\t/d:10.1.2.3               IP or Hostname of target Device.");
+                    Console.WriteLine("\t/u:Username               Username.");
+                    Console.WriteLine("\t/p:Pwd                    Password.");
+                    Console.WriteLine("\t/port:22                  TCP-Port.");
+                    Console.WriteLine("\t/Wait                     optional: Wait for your commands entered by Keyboard.");
+                    Console.WriteLine("\t/Debug                    optional: Enable Debug-Mode.");
+
+                    return(255);
+                }
+            }
+
+            libSSH2Lock = new object();
+
+            SSH2Library.Open(DebugFlag);
             rc = SSH2Library.libssh2_init(0);
             if(rc!= 0)
             {
                 Console.WriteLine("ERROR: libssh2 could not be loaded !");
-                return;
+                return(2);
             }
 
             IntPtr p_LibSSHVer = SSH2Library.libssh2_version(0);
-            //IntPtr ptrCString = (IntPtr)Marshal.StringToHGlobalAnsi(str); //Our actual marshal. This creates a copy of the string in unmanaged memory. This also converts the unicode string used in C# to ascii (char* is ASCII, wchar_t* is Unicode)
-            //Marshal.FreeHGlobal(p_LibSSHVer);
-            string libSSHVersion = Marshal.PtrToStringAnsi(p_LibSSHVer);  //(IntPtr)(char*)
-            
+            string libSSHVersion = Marshal.PtrToStringAnsi(p_LibSSHVer);  //(IntPtr)(char*)            
             Console.WriteLine("LibSSH2-Version: " + libSSHVersion);
 
-            //https://www.libssh2.org/examples/ssh2.html
-            libSSHSession = SSH2Library.libssh2_session_init();
-            //SSH2Library.libssh2_session_init_ex(System.Func<IntPtr, int> Marshal.AllocHGlobal, System.Func < IntPtr, IntPtr > Marshal.FreeHGlobal, System.Func < IntPtr, IntPtr, IntPtr > Marshal.ReAllocHGlobal, ...);
+
             Socket s = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             try
             {
-                s.Connect("10.0.21.254", 22);
+                IPAddressList destIPs = ResolveHost(DeviceIP);
+
+                foreach (IPAddress addr in destIPs.AvailableAddresses)
+                {
+                    try
+                    {
+                        s.Connect(addr, dstPort);
+                        break;
+                    }catch(Exception ex)
+                    {
+                        //If we got more IP´s for the host from DNS,
+                        //try to connect to next IP...
+                        Console.WriteLine("Error: Connection to IP {0} failed.\n{1}", addr.ToString(), ex.Message);
+                    }
+                }
+                if (!s.Connected)
+                {
+                    s.Dispose();
+                    s = null;
+
+                    SSH2Library.libssh2_exit();
+                    SSH2Library.Close();
+                    return (1);
+                }
+
+
+                //https://www.libssh2.org/examples/ssh2.html
+                libSSHSession = SSH2Library.libssh2_session_init();
+                //libSSHSession = SSH2Library.libssh2_session_init(true);
+
                 if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                     rc = SSH2Library.libssh2_session_handshake_all(libSSHSession, (IntPtr)s.Handle, 0);
                 else
@@ -130,30 +213,112 @@ namespace TestSSH
                 Thread th = new Thread(new ThreadStart(AsyncReceive));
                 th.Start();
 
-
-                //rc = SSH2Library.libssh2_channel_read(sshChannel, readBuffer);
-                //if (rc > 0)
-                //    Console.WriteLine("Prompt: " + System.Text.Encoding.ASCII.GetString(readBuffer));
-
-                cmd = "show version\n";
-                dataBuffer = System.Text.Encoding.ASCII.GetBytes(cmd);
-                rc = SSH2Library.libssh2_channel_write(sshChannel, dataBuffer);
-
-                System.Threading.Thread.Sleep(2000);
-
-                cmd = "show running-config\n";
-                dataBuffer = System.Text.Encoding.ASCII.GetBytes(cmd);
-                rc = SSH2Library.libssh2_channel_write(sshChannel, dataBuffer);
-
-                //System.Threading.Thread.Sleep(500);
-                /*while ((sshChannel != IntPtr.Zero) && (SSH2Library.libssh2_channel_eof(sshChannel) == 0))
+                if (Wait4Input)
                 {
-                    rc = SSH2Library.libssh2_channel_read(sshChannel, readBuffer);
-                    Console.WriteLine(System.Text.Encoding.ASCII.GetString(readBuffer));
-                } */
+                    cmd = "";
+                    Console.WriteLine("Press q  to exit.");
+                    while (!cmd.Equals("q") && !RecvErr)
+                    {
+                        Console.Write("type cmd> ");
+                        cmd = Console.ReadLine();
+                        if (cmd.Equals("q"))
+                        {
 
-                Console.WriteLine("Press any Key to stop reading from SSH-Channel...");
-                Console.ReadKey();
+                        } else
+                        {
+                            cmd += "\n";
+                            dataBuffer = System.Text.Encoding.ASCII.GetBytes(cmd);
+                            Monitor.Enter(libSSH2Lock);
+                            DataRecvied = false;
+                            rc = SSH2Library.libssh2_channel_write(sshChannel, dataBuffer);
+                            Monitor.Exit(libSSH2Lock);
+                        }
+                    }
+                }
+                else
+                {
+                    //Detect prompt:
+                    cmd = "\n";
+                    dataBuffer = System.Text.Encoding.ASCII.GetBytes(cmd);
+                    Monitor.Enter(libSSH2Lock);
+                    DataRecvied = false;
+                    recvData = "";
+                    rc = SSH2Library.libssh2_channel_write(sshChannel, dataBuffer);
+                    Monitor.Exit(libSSH2Lock);
+
+                    System.Threading.Thread.Sleep(200);
+                    while (strPrompt.Length == 0)
+                    {
+                        while ((!DataRecvied) && !RecvErr)
+                        {
+                            if (!DataRecvied && !RecvErr)
+                                System.Threading.Thread.Sleep(100);
+                        }
+                        if (DataRecvied)
+                        {
+                            Monitor.Enter(libSSH2Lock);
+                            if (rePrompt.IsMatch(recvData))
+                            {
+                                //Check for "local Echo"-Data
+                                strPrompt = recvData.Substring(recvData.Length / 2);
+                                if (recvData.StartsWith(strPrompt))
+                                {
+
+                                } else
+                                    strPrompt = recvData;
+                                if (DebugFlag)
+                                    Console.WriteLine("Found prompt: " + strPrompt);
+                            }
+                            else
+                            {
+                                DataRecvied = false;
+                            }
+                            Monitor.Exit(libSSH2Lock);
+                        }
+                    }
+
+                    //Execute Commands:
+                    string[] CMDs = { "show version\n", "show running-config\n" };
+                    for (int i = 0; i < CMDs.Length; i++)
+                    {
+                        cmd = CMDs[i];
+                        dataBuffer = System.Text.Encoding.ASCII.GetBytes(cmd);
+                        Monitor.Enter(libSSH2Lock);
+                        DataRecvied = false;
+                        recvData = "";
+                        rc = SSH2Library.libssh2_channel_write(sshChannel, dataBuffer);
+                        Monitor.Exit(libSSH2Lock);
+
+                        //In syncron-Mode you will wait now for the response:
+                        /*while ((sshChannel != IntPtr.Zero) && (SSH2Library.libssh2_channel_eof(sshChannel) == 0))
+                        {
+                            rc = SSH2Library.libssh2_channel_read(sshChannel, readBuffer);
+                            Console.WriteLine(System.Text.Encoding.ASCII.GetString(readBuffer));
+                        } */
+
+                        bCmdReady = false;
+                        while ((!bCmdReady) && !RecvErr)
+                        {
+                            if (!DataRecvied && !RecvErr)
+                                System.Threading.Thread.Sleep(100);
+                            else if(DataRecvied)
+                            {
+                                Monitor.Enter(libSSH2Lock);
+                                if(recvData.EndsWith(strPrompt))
+                                {
+                                    bCmdReady = true;
+                                    Console.WriteLine(recvData);
+                                } else
+                                {
+                                    DataRecvied = false;
+                                }
+                                Monitor.Exit(libSSH2Lock);
+                            }
+                        }
+                        if (RecvErr)
+                            break;
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -183,36 +348,104 @@ namespace TestSSH
                 s = null;
             }
             SSH2Library.libssh2_exit();
+            SSH2Library.Close();
+            libSSH2Lock = null;
 
             Console.WriteLine("Press any Key to exit...");
             Console.ReadKey();
+            return (0);
         }
         
         public static void AsyncReceive()
         {
-            int recvBytes = 0, rc = 0, recvCounter = 0;
+            int ErrCode = 0, l = 0;
+            string ErrorMsg = "", strRecvData = "";
+            int recvBytes = 0, rc1 = 0, recvCounter = 0;
             byte[] reBuf = new byte[0x1000], dataBuffer;
-            string strRecvData = "", strCmd = "";
-            System.Text.RegularExpressions.Regex re = new System.Text.RegularExpressions.Regex(".*-+[ ]?more[ ]?-+", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            string strCmd = "";
+            string[] recvLines = null;
+            System.Text.RegularExpressions.Regex reMore = new System.Text.RegularExpressions.Regex(".*-+[ ]?more[ ]?-+", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            System.Text.RegularExpressions.Regex reEnter = new System.Text.RegularExpressions.Regex(".*press.*enter.*", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
-            while (sshChannel != IntPtr.Zero)
+            while ((sshChannel != IntPtr.Zero) && !RecvErr)
             {
                 try
                 {
-                    recvBytes = SSH2Library.libssh2_channel_read(sshChannel, reBuf);
+                    Monitor.Enter(libSSH2Lock);
+                    recvBytes = SSH2Library.libssh2_channel_read(sshChannel, ref reBuf);
+                    Monitor.Exit(libSSH2Lock);
                     if (recvBytes > 0)
                     {
                         recvCounter++;
-                        Console.WriteLine("Recv-" + recvCounter.ToString() + ":\n=================================");
+                        if (DebugFlag)
+                            Console.WriteLine("Recv-" + recvCounter.ToString() + ":\n=================================");
                         strRecvData = System.Text.Encoding.ASCII.GetString(reBuf, 0, recvBytes);
-                        Console.WriteLine(strRecvData + "\n===*******************************************====");
+                        if (DebugFlag)
+                            Console.WriteLine(strRecvData + "\n===*******************************************====");
+                        else if(Wait4Input)
+                            Console.WriteLine(strRecvData);
 
-                        if (re.IsMatch(strRecvData))
+                        if (reMore.IsMatch(strRecvData))
                         {
+                            Monitor.Enter(libSSH2Lock);
                             strCmd = " ";
                             dataBuffer = System.Text.Encoding.ASCII.GetBytes(strCmd);
-                            rc = SSH2Library.libssh2_channel_write(sshChannel, dataBuffer);
+                            recvLines = strRecvData.Split("\n");
+                            for(l=0; l < (recvLines.Length-1); l++)
+                                recvData += recvLines[l] + "\n";
+
+                            rc1 = SSH2Library.libssh2_channel_write(sshChannel, dataBuffer);
+                            Monitor.Exit(libSSH2Lock);
+                        } else if (reEnter.IsMatch(strRecvData))
+                        {
+                            Monitor.Enter(libSSH2Lock);
+                            strCmd = "\n";
+                            dataBuffer = System.Text.Encoding.ASCII.GetBytes(strCmd);
+                            recvLines = strRecvData.Split("\n");
+                            for (l = 0; l < (recvLines.Length - 1); l++)
+                                recvData += recvLines[l] + "\n";
+
+                            rc1 = SSH2Library.libssh2_channel_write(sshChannel, dataBuffer);
+                            Monitor.Exit(libSSH2Lock);
                         }
+                        else
+                        {
+                            Monitor.Enter(libSSH2Lock);
+                            recvData += strRecvData;
+                            DataRecvied = true;
+                            Monitor.Exit(libSSH2Lock);
+                        }
+                    } else if ((recvBytes < 0) && (recvBytes != SSH2Library.LIBSSH2_ERROR_EAGAIN)) {
+                        ErrCode = recvBytes;
+
+                        IntPtr pErrMsg = IntPtr.Zero;
+                        int ErrMsgLen = 0;
+                        Monitor.Enter(libSSH2Lock);
+                        try
+                        {
+                            if (libSSHSession != IntPtr.Zero)
+                            {
+                                ErrCode = SSH2Library.libssh2_session_last_error(libSSHSession, ref pErrMsg, out ErrMsgLen, 0);
+
+                                if (ErrCode != 0)
+                                {
+                                    if (ErrMsgLen > 0)
+                                    {
+                                        ErrorMsg = Marshal.PtrToStringAnsi(pErrMsg, ErrMsgLen);
+                                        Console.WriteLine("Error: " + ErrCode.ToString() + " / " + ErrorMsg);
+                                    }
+                                    else
+                                    {
+                                        Console.WriteLine("Error: Receive-Error " + ErrCode.ToString());
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                        }
+                        RecvErr = true;
+                        Monitor.Exit(libSSH2Lock);
                     } else
                         Thread.Sleep(100);
                 }
@@ -221,6 +454,24 @@ namespace TestSSH
                     Console.WriteLine(ex.Message);
                 }
             }
+        }
+
+        private static IPAddressList ResolveHost(string IPorHost)
+        {
+            IPAddressList _addressSet;
+            IPAddress address = null;
+
+            if (IPAddress.TryParse(IPorHost, out address))
+            {
+                _addressSet = new IPAddressList(address);
+            }
+            else
+            {
+                //Try to resolve Destination via DNS:
+                _addressSet = new IPAddressList(IPorHost);
+            }
+
+            return (_addressSet);
         }
     }
 }

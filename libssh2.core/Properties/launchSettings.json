@@ -1,7 +1,8 @@
 {
   "profiles": {
     "libssh2.core": {
-      "commandName": "Project"
+      "commandName": "Project",
+      "nativeDebugging": true
     }
   }
 }

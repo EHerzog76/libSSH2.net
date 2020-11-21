@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "TestSSH": {
+      "commandName": "Project",
+      "commandLineArgs": "/u:\"cli-User\" /p:\"Pwd***\" /d:10.0.1.254 /port:22 /wait"
+    }
+  }
+}
