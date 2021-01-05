@@ -12,7 +12,7 @@ namespace libssh2.core.Interop
 {
     public static class SSH2Library
     {
-        private static object SSH2Lock;
+        private static volatile object SSH2Lock;
         private const string libSSH2Name = InteropRuntimeConfig.LibraryName + ".dll";
         public static UnmanagedLibrary libVCRun = null;
         public static UnmanagedLibrary libSSH2 = null;
@@ -20,7 +20,7 @@ namespace libssh2.core.Interop
 #if WithLibTest
         public static UnmanagedLibrary libTest = null;
 #endif
-        private static bool libSSH2Init;
+        private static volatile bool libSSH2Init;
 
         static SSH2Library()
         {
@@ -148,6 +148,7 @@ namespace libssh2.core.Interop
             {
                 libssh2_init = libSSH2.GetNativeMethodDelegate<del_libssh2_init>("libssh2_init");        
                 libssh2_exit = libSSH2.GetNativeMethodDelegate<del_libssh2_exit>("libssh2_exit");
+                libssh2_free = libSSH2.GetNativeMethodDelegate<del_libssh2_free>("libssh2_free");
                 libssh2_version = libSSH2.GetNativeMethodDelegate<del_libssh2_version>("libssh2_version");
                 libssh2_session_init_ex = libSSH2.GetNativeMethodDelegate<del_libssh2_session_init_ex>("libssh2_session_init_ex");
                 libssh2_session_set_blocking = libSSH2.GetNativeMethodDelegate<del_libssh2_session_set_blocking>("libssh2_session_set_blocking");
@@ -179,6 +180,7 @@ namespace libssh2.core.Interop
                 libssh2_session_free = libSSH2.GetNativeMethodDelegate<del_libssh2_session_free>("libssh2_session_free");
                 libssh2_hostkey_hash = libSSH2.GetNativeMethodDelegate<del_libssh2_hostkey_hash>("libssh2_hostkey_hash");
                 libssh2_session_hostkey = libSSH2.GetNativeMethodDelegate<del_libssh2_session_hostkey>("libssh2_session_hostkey");
+                libssh2_session_supported_algs = libSSH2.GetNativeMethodDelegate<del_libssh2_session_supported_algs>("libssh2_session_supported_algs");
                 libssh2_session_method_pref = libSSH2.GetNativeMethodDelegate<del_libssh2_session_method_pref>("libssh2_session_method_pref");
                 libssh2_session_methods = libSSH2.GetNativeMethodDelegate<del_libssh2_session_methods>("libssh2_session_methods");
                 libssh2_channel_flush_ex = libSSH2.GetNativeMethodDelegate<del_libssh2_channel_flush_ex>("libssh2_channel_flush_ex");
@@ -268,6 +270,18 @@ namespace libssh2.core.Interop
 
 #region libssh2.dll (version 1.9.0.0)
         public const int LIBSSH2_INIT_NO_CRYPTO = 0x0001;
+
+        /* libssh2_session_method_pref() constants */
+        public const int LIBSSH2_METHOD_KEX = 0;
+        public const int LIBSSH2_METHOD_HOSTKEY = 1;
+        public const int LIBSSH2_METHOD_CRYPT_CS = 2;
+        public const int LIBSSH2_METHOD_CRYPT_SC = 3;
+        public const int LIBSSH2_METHOD_MAC_CS = 4;
+        public const int LIBSSH2_METHOD_MAC_SC = 5;
+        public const int LIBSSH2_METHOD_COMP_CS = 6;
+        public const int LIBSSH2_METHOD_COMP_SC = 7;
+        public const int LIBSSH2_METHOD_LANG_CS = 8;
+        public const int LIBSSH2_METHOD_LANG_SC = 9;
 
         [StructLayout(LayoutKind.Sequential)]
         public struct packet_requirev_state_t
@@ -709,6 +723,9 @@ namespace libssh2.core.Interop
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate void del_libssh2_exit();
 
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public delegate void del_libssh2_free(IntPtr session, IntPtr ptr);
+
         //CharSet = CharSet.Ansi, 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         /* [return: MarshalAs(UnmanagedType.LPStr)] */
@@ -810,12 +827,39 @@ namespace libssh2.core.Interop
         [return: MarshalAs(UnmanagedType.LPStr)]
         public delegate string del_libssh2_session_hostkey(IntPtr session, [Out] out UIntPtr len, [Out] out int type);
 
+        public static string[] libssh2_session_supported_algos(IntPtr session, int method_type)
+        {
+            //GCHandle.AddrOfPinnedObject
+            string[] resultAlgos = null;
+            IntPtr algos = IntPtr.Zero;
+            IntPtr pTmpAlgo = IntPtr.Zero;
+            int rc = libssh2_session_supported_algs(session, method_type, out algos);
+            if(rc > 0)
+            {
+                resultAlgos = new string[rc];
+                unsafe
+                {
+                    void** pAlgo = (void**)algos.ToPointer();
+                    for (int a = 0; a < rc; a++)
+                    {
+                        pTmpAlgo = (IntPtr)(pAlgo[a]);
+                        resultAlgos[a] = Marshal.PtrToStringAnsi(pTmpAlgo);
+                    }
+                }
+                libssh2_free(session, algos);
+            }
+            return (resultAlgos);
+        }
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public delegate int del_libssh2_session_supported_algs(IntPtr session, int method_type, [Out] out IntPtr algos);
+
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate int del_libssh2_session_method_pref(IntPtr session, int method_type, [MarshalAs(UnmanagedType.LPStr)] string prefs);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-        [return: MarshalAs(UnmanagedType.LPStr)]
-        public delegate string del_libssh2_session_methods(IntPtr session, int method_type);
+        public delegate IntPtr del_libssh2_session_methods(IntPtr session, int method_type);
+        //[return: MarshalAs(UnmanagedType.LPStr)]
+        //public delegate string del_libssh2_session_methods(IntPtr session, int method_type);
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         public delegate int del_libssh2_channel_flush_ex(IntPtr channel, int streamid);
@@ -866,6 +910,7 @@ namespace libssh2.core.Interop
 
         public static del_libssh2_init libssh2_init;
         public static del_libssh2_exit libssh2_exit;
+        public static del_libssh2_free libssh2_free;
         public static del_libssh2_version libssh2_version;
         public static del_libssh2_session_init_ex libssh2_session_init_ex;
         public static del_libssh2_session_set_blocking libssh2_session_set_blocking;
@@ -897,6 +942,7 @@ namespace libssh2.core.Interop
         public static del_libssh2_session_free libssh2_session_free;
         public static del_libssh2_hostkey_hash libssh2_hostkey_hash;
         public static del_libssh2_session_hostkey libssh2_session_hostkey;
+        public static del_libssh2_session_supported_algs libssh2_session_supported_algs;
         public static del_libssh2_session_method_pref libssh2_session_method_pref;
         public static del_libssh2_session_methods libssh2_session_methods;
         public static del_libssh2_channel_flush_ex libssh2_channel_flush_ex;
